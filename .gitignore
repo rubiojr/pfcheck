@@ -1,0 +1,4 @@
+/build/
+*.gguf
+*.part
+internal/embedbin/pf-cli

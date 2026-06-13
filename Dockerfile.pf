@@ -1,0 +1,53 @@
+# Builds the privacy-filter.cpp `pf-cli` binary in a reproducible container.
+#
+# The resulting binary is statically-ish linked against system libstdc++/glibc.
+# Use scripts/build-pf.sh to build and extract it to the host.
+FROM debian:bookworm-slim AS build
+
+ARG PF_REPO=https://github.com/localai-org/privacy-filter.cpp
+ARG PF_REF=master
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        cmake \
+        ninja-build \
+        build-essential \
+        g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Clone with submodules (ggml is a submodule, required for the build).
+RUN git clone --recursive --depth 1 --branch "${PF_REF}" "${PF_REPO}" . \
+    || (git clone --recursive "${PF_REPO}" . && git checkout "${PF_REF}" && git submodule update --init --recursive)
+
+# Configure and build the release preset (CPU backend).
+#   BUILD_SHARED_LIBS=OFF  statically links ggml so the extracted binary is
+#                          self-contained (no libggml.so.0 at runtime).
+#   GGML_NATIVE=OFF        avoid -march=native so the binary is portable across
+#                          hosts (not pinned to the build machine's CPU).
+#   PF_BUILD_TESTS=OFF     skip the test tree; we only need pf-cli.
+RUN cmake --preset release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DGGML_NATIVE=OFF \
+        -DPF_BUILD_TESTS=OFF \
+    && cmake --build --preset release --target pf-cli -j "$(nproc)" \
+    && find build -name 'pf-cli' -type f
+
+# Stage the binary at a predictable path.
+RUN mkdir -p /out \
+    && cp "$(find build -name 'pf-cli' -type f | head -n1)" /out/pf-cli \
+    && strip /out/pf-cli || true
+
+# Minimal runtime image (handy for `docker run`).
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libstdc++6 libgomp1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/pf-cli /usr/local/bin/pf-cli
+ENTRYPOINT ["/usr/local/bin/pf-cli"]
+
+# Export stage: `docker build --target export -o <dir> .` writes pf-cli to <dir>.
+FROM scratch AS export
+COPY --from=build /out/pf-cli /pf-cli
