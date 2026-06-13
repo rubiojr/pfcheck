@@ -12,9 +12,12 @@
 #   PFCHECK_CACHE_DIR  Override the pfcheck cache directory
 #   DOCKER        Container CLI to use (default: docker)
 #
-# Without an output-dir argument the binary is installed to:
-#   ${PFCHECK_CACHE_DIR:-$HOME/.cache/pfcheck}/bin/pf-cli
-# which is on pfcheck's binary search path.
+# Without an output-dir argument the binary is installed to <cache>/bin/pf-cli,
+# where <cache> matches Go's os.UserCacheDir() for the host OS, so pfcheck finds
+# it automatically.
+#
+# Note: this always produces a *Linux* binary (it builds inside Docker). For a
+# native macOS binary use scripts/build-pf-native.sh instead.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,12 +28,24 @@ PF_REF="${PF_REF:-master}"
 PF_REPO="${PF_REPO:-https://github.com/localai-org/privacy-filter.cpp}"
 IMAGE_TAG="pfcheck/pf-cli:${PF_REF}"
 
+# cache_dir mirrors Go's os.UserCacheDir() so pfcheck's ResolveBinary() finds
+# the installed binary.
+cache_dir() {
+    if [[ -n "${PFCHECK_CACHE_DIR:-}" ]]; then
+        printf '%s' "${PFCHECK_CACHE_DIR}"
+        return
+    fi
+    case "$(uname -s)" in
+        Darwin) printf '%s' "${HOME}/Library/Caches/pfcheck" ;;
+        *)      printf '%s' "${XDG_CACHE_HOME:-${HOME}/.cache}/pfcheck" ;;
+    esac
+}
+
 # Resolve the install directory.
 if [[ $# -ge 1 ]]; then
     OUT_DIR="$1"
 else
-    CACHE_DIR="${PFCHECK_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/pfcheck}"
-    OUT_DIR="${CACHE_DIR}/bin"
+    OUT_DIR="$(cache_dir)/bin"
 fi
 
 echo ">> Building ${IMAGE_TAG} (ref=${PF_REF})"

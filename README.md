@@ -17,16 +17,18 @@ entity output.
 ## Quick start
 
 ```sh
-# 1. Build pf-cli in Docker AND embed it into the pfcheck binary in one step.
+# 1. Build pf-cli AND embed it into the pfcheck binary in one step.
+#    Linux: builds pf-cli in Docker. macOS: builds it natively (needs cmake +
+#    Xcode CLT). See "Building pf-cli" for details.
 make build
 
 # 2. Check some text (the model downloads automatically on first run).
 echo "Contact John Doe at jdoe@example.com" | ./build/pfcheck
 ```
 
-`make build` produces a single self-contained executable — `pf-cli` is embedded
-via `go:embed`, so you can copy `build/pfcheck` to another machine and the only
-thing it fetches at runtime is the model.
+`make build` produces a single self-contained executable for the host OS —
+`pf-cli` is embedded via `go:embed`, so the only thing it fetches at runtime is
+the model.
 
 Example output:
 
@@ -207,10 +209,31 @@ The cache directory is `$PFCHECK_CACHE_DIR`, or `<user-cache-dir>/pfcheck`.
 
 ## Building pf-cli
 
-`make build` runs `scripts/build-pf.sh` to build the upstream binary in a Debian
-container (`Dockerfile.pf`), stages it at `internal/embedbin/pf-cli`, and embeds
-it into the Go binary (`-tags embed_pfcli`). `ggml` is statically linked and
+`make build` builds the upstream `pf-cli`, stages it at
+`internal/embedbin/pf-cli`, and embeds it into the Go binary
+(`-tags embed_pfcli`). In both build paths `ggml` is statically linked and
 `-march=native` is disabled so the binary is portable.
+
+There are two build paths, selected automatically by OS (override with
+`PF_BUILD=native|docker`):
+
+| `PF_BUILD` | Script | Requirements | Produces |
+|------------|--------|--------------|----------|
+| `docker` (default on Linux) | `scripts/build-pf.sh` | Docker | a **Linux** binary |
+| `native` (default on macOS) | `scripts/build-pf-native.sh` | `git`, `cmake`, a C++17 compiler | a **host-native** binary (macOS Mach-O, Linux ELF) |
+
+```sh
+make build                 # auto: native on macOS, docker on Linux
+make build PF_BUILD=native # force the host CMake build (no Docker)
+```
+
+On **macOS**, install the toolchain first:
+
+```sh
+xcode-select --install     # C++ compiler
+brew install cmake
+make build                 # uses scripts/build-pf-native.sh automatically
+```
 
 To build pfcheck *without* embedding (resolve `pf-cli` from `$PATH`/cache at
 runtime):
@@ -219,15 +242,17 @@ runtime):
 make build-noembed
 ```
 
-Override the upstream source ref with `PF_REF`:
+Override the upstream source ref with `PF_REF`, or install pf-cli standalone:
 
 ```sh
-PF_REF=master make pf-cli      # force-rebuild the embedded pf-cli
-./scripts/build-pf.sh /usr/local/bin   # or install standalone elsewhere
+PF_REF=master make pf-cli            # force-rebuild the embedded pf-cli
+./scripts/build-pf-native.sh /usr/local/bin   # native install elsewhere
+./scripts/build-pf.sh /usr/local/bin          # Linux/Docker install elsewhere
 ```
 
-You can also run the binary straight from the container image
-(`pfcheck/pf-cli:<ref>`), built by the same script.
+Both standalone installs default to `<user-cache-dir>/pfcheck/bin` (matching
+`os.UserCacheDir()`), where pfcheck finds the binary automatically. The Docker
+path also leaves a runnable container image (`pfcheck/pf-cli:<ref>`).
 
 ## Development
 
