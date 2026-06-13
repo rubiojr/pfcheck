@@ -18,6 +18,17 @@ func IsStderrTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
+// IsStdinPiped reports whether standard input is connected to a pipe or a
+// redirected file rather than an interactive terminal, i.e. there is data to
+// read without blocking on a human.
+func IsStdinPiped() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice == 0
+}
+
 // HumanBytes formats a byte count using binary (IEC) units.
 func HumanBytes(n int64) string {
 	const unit = 1024

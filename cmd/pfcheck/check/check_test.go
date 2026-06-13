@@ -96,3 +96,60 @@ func mustWrite(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestAllExist(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "a.txt")
+	mustWrite(t, f, "x")
+
+	if !allExist([]string{dir, f}) {
+		t.Error("allExist should be true for existing dir+file")
+	}
+	if allExist([]string{f, "this is not a path"}) {
+		t.Error("allExist should be false when any arg is missing")
+	}
+	if allExist([]string{"I am Robb"}) {
+		t.Error("allExist should be false for literal text")
+	}
+}
+
+func TestGatherPaths(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.md"), "My name is Sergio")
+	mustWrite(t, filepath.Join(dir, "clean.txt"), "nothing")
+	sub := filepath.Join(dir, "docs")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(sub, "n.rst"), "nested")
+
+	// Single file → compact (multi=false).
+	ins, multi, err := gatherPaths([]string{filepath.Join(dir, "a.md")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if multi || len(ins) != 1 {
+		t.Errorf("single file: multi=%v len=%d, want false/1", multi, len(ins))
+	}
+
+	// Single directory → multi.
+	ins, multi, err = gatherPaths([]string{sub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !multi || len(ins) != 1 {
+		t.Errorf("single dir: multi=%v len=%d, want true/1", multi, len(ins))
+	}
+
+	// Multiple files → multi.
+	ins, multi, err = gatherPaths([]string{
+		filepath.Join(dir, "a.md"),
+		filepath.Join(dir, "clean.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !multi || len(ins) != 2 {
+		t.Errorf("multi files: multi=%v len=%d, want true/2", multi, len(ins))
+	}
+}

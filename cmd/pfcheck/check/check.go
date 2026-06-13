@@ -86,13 +86,15 @@ var textFilenames = newExtSet(
 	"Berksfile", "Thorfile", "Capfile", "BUILD", "WORKSPACE", "Earthfile",
 )
 
-// Command detects PII in text from stdin, a file, or arguments. The same flags
-// and action are reused as the root command in main, so `pfcheck <text>` and
-// `pfcheck check <text>` behave identically.
+// Command detects PII in text, files, directories, or piped stdin. Positional
+// arguments that are existing paths are auto-detected as files/directories;
+// anything else is treated as literal text. The same flags and action are
+// reused as the root command in main, so `pfcheck <text|file|dir>` and
+// `pfcheck check <text|file|dir>` behave identically.
 var Command = &cli.Command{
 	Name:      "check",
-	Usage:     "Detect PII in text from stdin, a file, or arguments",
-	ArgsUsage: "[text...]",
+	Usage:     "Detect PII in text, files, directories, or piped stdin",
+	ArgsUsage: "[text...|file...|dir...]",
 	Flags:     Flags(),
 	Action:    Run,
 }
@@ -104,12 +106,12 @@ func Flags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    "file",
 			Aliases: []string{"f"},
-			Usage:   "Read input from `FILE` instead of stdin",
+			Usage:   "Force reading input from `FILE` (usually auto-detected)",
 		},
 		&cli.StringFlag{
 			Name:    "dir",
 			Aliases: []string{"d"},
-			Usage:   "Scan all common text files under `DIR` recursively",
+			Usage:   "Force scanning text files under `DIR` (usually auto-detected)",
 		},
 		&cli.BoolFlag{
 			Name:    "json",
@@ -174,14 +176,13 @@ type input struct {
 // cli.Exit is used so the process exit status is meaningful for scripting.
 func Run(ctx context.Context, cmd *cli.Command) error {
 	quiet := cmd.Bool("quiet")
-	multi := cmd.String("dir") != ""
 
-	inputs, err := gatherInputs(cmd)
+	inputs, multi, err := gatherInputs(cmd)
 	if err != nil {
 		return cli.Exit(fmt.Sprintf("pfcheck: %v", err), 2)
 	}
 	if len(inputs) == 0 {
-		return cli.Exit("pfcheck: no input text provided", 2)
+		return cli.Exit("pfcheck: no input: pass text, a file, a directory, or pipe data on stdin", 2)
 	}
 	// For a single interactive input, reject empty text outright.
 	if !multi && strings.TrimSpace(inputs[0].text) == "" {
@@ -348,30 +349,98 @@ func resolveModel(ctx context.Context, cmd *cli.Command, quiet bool) (string, er
 	return path, err
 }
 
-// gatherInputs collects the text(s) to classify from --dir, --file, arguments,
-// or stdin, in that order of precedence.
-func gatherInputs(cmd *cli.Command) ([]input, error) {
+// gatherInputs collects the text(s) to classify and reports whether the result
+// should be rendered as a multi-file scan. Resolution order:
+//
+//  1. Explicit --dir / --file flags.
+//  2. Positional arguments: if every argument is an existing path, each is
+//     handled as a file or directory (auto-detected); otherwise the arguments
+//     are joined and treated as literal text.
+//  3. Piped stdin (when no arguments are given and stdin is not a terminal).
+//
+// With none of the above it returns no inputs, signalling "no input".
+func gatherInputs(cmd *cli.Command) ([]input, bool, error) {
 	if dir := cmd.String("dir"); dir != "" {
-		return gatherDir(dir)
+		ins, err := gatherDir(dir)
+		return ins, true, err
 	}
 
 	if f := cmd.String("file"); f != "" {
-		b, err := os.ReadFile(f)
+		in, err := readFileInput(f)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", f, err)
+			return nil, false, err
 		}
-		return []input{{name: f, text: string(b)}}, nil
+		return []input{in}, false, nil
 	}
 
-	if cmd.Args().Len() > 0 {
-		return []input{{text: strings.Join(cmd.Args().Slice(), " ")}}, nil
+	if args := cmd.Args().Slice(); len(args) > 0 {
+		// "Magically" handle files and directories passed positionally.
+		if allExist(args) {
+			return gatherPaths(args)
+		}
+		// Otherwise the arguments are literal text to classify.
+		return []input{{text: strings.Join(args, " ")}}, false, nil
 	}
 
-	b, err := io.ReadAll(os.Stdin)
+	// No arguments: read piped stdin, but never block on an interactive prompt.
+	if util.IsStdinPiped() {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, false, fmt.Errorf("reading stdin: %w", err)
+		}
+		return []input{{text: string(b)}}, false, nil
+	}
+
+	return nil, false, nil
+}
+
+// allExist reports whether every argument refers to an existing file or
+// directory.
+func allExist(args []string) bool {
+	for _, a := range args {
+		if _, err := os.Stat(a); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// gatherPaths expands positional file/directory paths into inputs. The result
+// is treated as multi-file output when a directory is involved or more than one
+// path is given (a single file keeps the compact single-input output).
+func gatherPaths(paths []string) ([]input, bool, error) {
+	var inputs []input
+	sawDir := false
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return nil, false, err
+		}
+		if fi.IsDir() {
+			sawDir = true
+			ins, err := gatherDir(p)
+			if err != nil {
+				return nil, false, err
+			}
+			inputs = append(inputs, ins...)
+			continue
+		}
+		in, err := readFileInput(p)
+		if err != nil {
+			return nil, false, err
+		}
+		inputs = append(inputs, in)
+	}
+	multi := sawDir || len(paths) > 1
+	return inputs, multi, nil
+}
+
+func readFileInput(path string) (input, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading stdin: %w", err)
+		return input{}, fmt.Errorf("reading %s: %w", path, err)
 	}
-	return []input{{text: string(b)}}, nil
+	return input{name: path, text: string(b)}, nil
 }
 
 // gatherDir walks dir recursively, collecting non-empty plain-text files whose

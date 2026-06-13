@@ -57,20 +57,34 @@ fi
 ## CLI
 
 ```
-pfcheck [options] [text...]            # root command == check
-pfcheck check [options] [text...]
+pfcheck [options] [text | file | dir ...]    # root command == check
+pfcheck check [options] [text | file | dir ...]
 pfcheck download-model [-o PATH] [--force]
 ```
 
-The root command is the `check` command, so `echo ... | pfcheck`,
-`pfcheck "some text"` and `pfcheck --quiet` all work without naming `check`.
+The root command is the `check` command, and it figures out its input
+automatically:
+
+| You run | pfcheck does |
+|---------|--------------|
+| `echo "..." \| pfcheck`      | reads the piped text |
+| `pfcheck "some text"`        | classifies the literal text |
+| `pfcheck notes.txt`          | reads the file (it exists) |
+| `pfcheck ./docs`             | recursively scans the directory |
+| `pfcheck a.md b.md src/`     | scans each path (files + dirs) |
+| `pfcheck` (no args, no pipe) | prints a short "no input" error |
+
+Any positional argument that is an existing file or directory is handled as
+such; anything else is treated as literal text. The `-f/--file` and `-d/--dir`
+flags still exist to force a path explicitly (e.g. a file whose name looks like
+ordinary words).
 
 ### `check` (default command)
 
 | Flag | Description |
 |------|-------------|
-| `-f, --file FILE`    | Read input from a file instead of stdin |
-| `-d, --dir DIR`      | Scan all common text files under `DIR` recursively |
+| `-f, --file FILE`    | Force reading a file (usually auto-detected) |
+| `-d, --dir DIR`      | Force scanning a directory (usually auto-detected) |
 | `-j, --json`         | Emit detected entities as JSON |
 | `-q, --quiet`        | No output; communicate via exit code only |
 | `-t, --threshold F`  | Minimum entity score to report (default `0.5`) |
@@ -84,19 +98,20 @@ Examples:
 
 ```sh
 pfcheck "My SSN is 123-45-6789"
-pfcheck --json -f notes.txt
+pfcheck notes.txt
+pfcheck ./docs --json
 cat email.txt | pfcheck --threshold 0.8
 ```
 
 ### Scanning a directory
 
-`--dir` recursively scans every common text file (by extension) under a
-directory, loading the model once and reusing it for all files. Hidden
-directories (e.g. `.git`) and empty files are skipped.
+Passing a directory (positionally or via `--dir`) recursively scans every
+common text file (by extension) under it, loading the model once and reusing it
+for all files. Hidden directories (e.g. `.git`) and empty files are skipped.
 
 ```sh
-pfcheck --dir ./docs
-pfcheck --dir ./docs --json     # [{ "file": ..., "entities": [...] }, ...]
+pfcheck ./docs
+pfcheck ./docs --json           # [{ "file": ..., "entities": [...] }, ...]
 pfcheck --dir ./docs --quiet    # exit 1 if any file contains PII
 ```
 
